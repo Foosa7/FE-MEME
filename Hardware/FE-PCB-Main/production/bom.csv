@@ -1,0 +1,7 @@
+Designator,Footprint,Quantity,Value,LCSC Part #
+J1,JST_XH_B8B-XH-A_1x08_P2.50mm_Vertical,1,8P-JST-XH ,
+J2,JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,1,3P-JST-XH,
+"J3, J4",JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,2,2P-JST-XH,
+U1,RPi_Pico_SMD_TH,1,Pico,
+U2,Latch,1,Latch,
+U5,DS3231_PCB,1,DS3231_PCB,
