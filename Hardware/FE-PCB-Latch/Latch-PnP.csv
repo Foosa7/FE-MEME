@@ -1,0 +1,18 @@
+Designator,Val,Package,Mid X,Mid Y,Rotation,Layer
+C1,C_Small,C_0603_1608Metric,15.3,8.75,180,top
+Q1,Si2302,SOT-23,15.2375,4.275,0,top
+R1,R_Small_US,R_0603_1608Metric,8.6,7.8,-90,top
+R2,R_Small_US,R_0603_1608Metric,5.5,10,0,top
+R3,R_Small_US,R_0603_1608Metric,5.5,12.5,0,top
+R4,R_Small_US,R_0603_1608Metric,15.3,7,0,top
+R5,R_Small_US,R_0603_1608Metric,10.35,7.8,-90,top
+R6,R_Small_US,R_0603_1608Metric,5.675,7.5,0,top
+R7,R_Small_US,R_0603_1608Metric,5.7,5.2,180,top
+TP1,TestPoint,cast_pad,1.496,13.1,0,top
+TP2,TestPoint,cast_pad,18.6,8,180,top
+TP3,TestPoint,cast_pad,1.496,8,0,top
+TP4,TestPoint,cast_pad,1.506,5.48,0,top
+TP5,TestPoint,cast_pad,1.546,2.93,0,top
+U1,BC547,SOT-23,9.45,11.4,0,top
+U2,BC547,SOT-23,9.45,4.2,0,top
+U3,BC547,SOT-23,15.3,11.475,0,top

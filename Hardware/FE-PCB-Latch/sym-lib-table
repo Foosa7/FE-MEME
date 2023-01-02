@@ -1,0 +1,4 @@
+(sym_lib_table
+  (lib (name "KiCad RP Pico")(type "KiCad")(uri "C:/Users/rohan/Pictures/FE-PCB/KiCad-RP-Pico-main/RP-Pico Libraries/MCU_RaspberryPi_and_Boards.kicad_sym")(options "")(descr ""))
+  (lib (name "FE-PCB")(type "KiCad")(uri "${KIPRJMOD}/FE-PCB.kicad_sym")(options "")(descr ""))
+)
