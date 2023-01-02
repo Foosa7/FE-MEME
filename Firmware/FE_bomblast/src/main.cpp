@@ -1,0 +1,518 @@
+/*
+
+#define TFT_MISO 0 // RX PIN - Not Connected in display
+#define TFT_SCLK 2 // In display, connect to SCL
+#define TFT_MOSI 3 // In display, connect to SDA
+#define TFT_CS   20  // In display, connect to CS
+#define TFT_DC   18  // In display, connect to DC
+#define TFT_RST  19  // In display, connect to RES
+#define TFT_BL   17            // In display, connect to BLK
+#define TFT_BACKLIGHT_ON HIGH  // Level to turn ON back-light (HIGH or LOW)
+
+// #define PIN_WIRE_SDA (4u)
+// #define PIN_WIRE_SCL (5u)
+
+const int shutdownPin = 27, ttpPin = 6, ShutdownInput = 22; 
+
+// GP23 
+DIN GP3
+*/
+
+
+
+#include <Arduino.h>
+#define NORMAL_SPEED // Comment out for rame rate for render speed test
+// Load GIF library
+#include <AnimatedGIF.h>
+AnimatedGIF gif;
+
+// Example AnimatedGIF library images
+#include "tri_gif.h"
+#define GIF_IMAGE1 tri_gif //  No DMA  63 fps, DMA:  71fps
+
+#include "rickroll.h"
+#define GIF_IMAGE2 rick //  No DMA  63 fps, DMA:  71fps
+
+#define DISPLAY_WIDTH tft.width()
+#define DISPLAY_HEIGHT tft.height()
+#define BUFFER_SIZE 1024 // Optimum is >= GIF width or integral division of width
+
+#ifdef USE_DMA
+uint16_t usTemp[2][BUFFER_SIZE]; // Global to support DMA use
+#else
+uint16_t usTemp[1][BUFFER_SIZE]; // Global to support DMA use
+#endif
+bool dmaBuf = 0;
+
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <Wire.h>
+#include "RTClib.h"
+
+
+TFT_eSPI tft = TFT_eSPI();
+
+RTC_DS3231 rtc;
+char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+ 
+const int shutdownPin = 27, ttpPin = 6, ShutdownInput = 22;  // const int shutdownPin = 13, ttpPin = 6, ShutdownInput = 22;
+
+int remaining, rem_days, rem_hours, rem_mins;
+int EventState, StateChange = 0;
+long DispOnTime = 60000;
+unsigned long startTime;
+// Draw a line of image directly on the LCD
+void GIFDraw(GIFDRAW *pDraw)
+{
+  uint8_t *s;
+  uint16_t *d, *usPalette;
+  int x, y, iWidth, iCount;
+
+  // Displ;ay bounds chech and cropping
+  iWidth = pDraw->iWidth;
+  if (iWidth + pDraw->iX > DISPLAY_WIDTH)
+    iWidth = DISPLAY_WIDTH - pDraw->iX;
+  usPalette = pDraw->pPalette;
+  y = pDraw->iY + pDraw->y; // current line
+  if (y >= DISPLAY_HEIGHT || pDraw->iX >= DISPLAY_WIDTH || iWidth < 1)
+    return;
+
+  // Old image disposal
+  s = pDraw->pPixels;
+  if (pDraw->ucDisposalMethod == 2) // restore to background color
+  {
+    for (x = 0; x < iWidth; x++)
+    {
+      if (s[x] == pDraw->ucTransparent)
+        s[x] = pDraw->ucBackground;
+    }
+    pDraw->ucHasTransparency = 0;
+  }
+
+  // Apply the new pixels to the main image
+  if (pDraw->ucHasTransparency) // if transparency used
+  {
+    uint8_t *pEnd, c, ucTransparent = pDraw->ucTransparent;
+    pEnd = s + iWidth;
+    x = 0;
+    iCount = 0; // count non-transparent pixels
+    while (x < iWidth)
+    {
+      c = ucTransparent - 1;
+      d = &usTemp[0][0];
+      while (c != ucTransparent && s < pEnd && iCount < BUFFER_SIZE)
+      {
+        c = *s++;
+        if (c == ucTransparent) // done, stop
+        {
+          s--; // back up to treat it like transparent
+        }
+        else // opaque
+        {
+          *d++ = usPalette[c];
+          iCount++;
+        }
+      }           // while looking for opaque pixels
+      if (iCount) // any opaque pixels?
+      {
+        // DMA would degrtade performance here due to short line segments
+        tft.setAddrWindow(pDraw->iX + x, y, iCount, 1);
+        tft.pushPixels(usTemp, iCount);
+        x += iCount;
+        iCount = 0;
+      }
+      // no, look for a run of transparent pixels
+      c = ucTransparent;
+      while (c == ucTransparent && s < pEnd)
+      {
+        c = *s++;
+        if (c == ucTransparent)
+          x++;
+        else
+          s--;
+      }
+    }
+  }
+  else
+  {
+    s = pDraw->pPixels;
+
+    // Unroll the first pass to boost DMA performance
+    // Translate the 8-bit pixels through the RGB565 palette (already byte reversed)
+    if (iWidth <= BUFFER_SIZE)
+      for (iCount = 0; iCount < iWidth; iCount++)
+        usTemp[dmaBuf][iCount] = usPalette[*s++];
+    else
+      for (iCount = 0; iCount < BUFFER_SIZE; iCount++)
+        usTemp[dmaBuf][iCount] = usPalette[*s++];
+
+#ifdef USE_DMA // 71.6 fps (ST7796 84.5 fps)
+    tft.dmaWait();
+    tft.setAddrWindow(pDraw->iX, y, iWidth, 1);
+    tft.pushPixelsDMA(&usTemp[dmaBuf][0], iCount);
+    dmaBuf = !dmaBuf;
+#else // 57.0 fps
+    tft.setAddrWindow(pDraw->iX, y, iWidth, 1);
+    tft.pushPixels(&usTemp[0][0], iCount);
+#endif
+
+    iWidth -= iCount;
+    // Loop if pixel buffer smaller than width
+    while (iWidth > 0)
+    {
+      // Translate the 8-bit pixels through the RGB565 palette (already byte reversed)
+      if (iWidth <= BUFFER_SIZE)
+        for (iCount = 0; iCount < iWidth; iCount++)
+          usTemp[dmaBuf][iCount] = usPalette[*s++];
+      else
+        for (iCount = 0; iCount < BUFFER_SIZE; iCount++)
+          usTemp[dmaBuf][iCount] = usPalette[*s++];
+
+#ifdef USE_DMA
+      tft.dmaWait();
+      tft.pushPixelsDMA(&usTemp[dmaBuf][0], iCount);
+      dmaBuf = !dmaBuf;
+#else
+      tft.pushPixels(&usTemp[0][0], iCount);
+#endif
+      iWidth -= iCount;
+    }
+  }
+} /* GIFDraw() */
+
+void TouchOffRoutine(){
+    if(((millis() - startTime >= 5000) && (digitalRead(ShutdownInput) == HIGH))){
+    digitalWrite(shutdownPin, LOW);
+    digitalWrite(LED_BUILTIN, LOW);
+    Serial.println("Force down"); 
+  }
+}
+
+void setup()
+{
+  // rtc.adjust(DateTime(2022, 11, 03, 21, 59, 0)); // YY, MM, DD, HH, MM, SS
+  // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+
+  // startTime = millis();
+  pinMode(ShutdownInput, INPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  // digitalWrite(LED_BUILTIN, HIGH);
+  Serial.begin(115200);
+  startTime = millis();
+  pinMode(ttpPin, INPUT);
+  pinMode(shutdownPin, OUTPUT);
+  digitalWrite(shutdownPin, HIGH);
+  tft.begin();
+  attachInterrupt(ShutdownInput, TouchOffRoutine, RISING);
+  // pinMode(15, OUTPUT);
+  // digitalWrite(shutdownPin, HIGH);
+  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+
+#ifdef USE_DMA
+      tft.initDMA();
+#endif
+  tft.setRotation(3);
+  tft.fillScreen(TFT_BLACK);
+
+  gif.begin(BIG_ENDIAN_PIXELS);
+  // tft.drawString("To Go!", 90, 200, 4);
+
+  if (!rtc.begin())
+  {
+    Serial.println("Couldn't find RTC");
+    Serial.flush();
+    ///*
+    while (1) {
+      Serial.println("Couldn't find RTC");
+      delay(10);
+    }//*/
+
+  }
+
+  if (rtc.lostPower())
+  {
+    Serial.println("RTC lost power, let's set the time!");
+    // When time needs to be set on a new device, or after a power loss, the
+    // following line sets the RTC to the date & time this sketch was compiled
+    // rtc.adjust(DateTime(F(_DATE), F(TIME_)));
+    // This line sets the RTC with an explicit date & time, for example to set
+    // January 21, 2014 at 3am you would call:
+    // rtc.adjust(DateTime(2022, 9, 30, 21, 59, 0));
+  }
+
+  // DateTime now = rtc.now();
+}
+
+void ttpShutdown()
+{
+  Serial.print("ttpPin ");
+  int ttpStatus = digitalRead(ttpPin);
+  Serial.println(ttpStatus);
+  if (ttpStatus == HIGH)
+  {
+    Serial.println(" High ");
+    digitalWrite(shutdownPin, HIGH);
+  }
+  else
+    Serial.println(" Low ");
+  digitalWrite(shutdownPin, LOW);
+}
+
+void shutdown()
+{
+  Serial.println(startTime);
+  if(((millis() - startTime >= 5000) && (digitalRead(ShutdownInput) == HIGH))){
+    digitalWrite(shutdownPin, LOW);   
+    Serial.println("Force down"); 
+  }
+  if(millis() - startTime >= DispOnTime){  //30000 = 30s  //300000 = 5 minutes
+    digitalWrite(shutdownPin, LOW);
+    Serial.println("Shutting down");
+    // delay(2000);
+  }
+  else{
+    // digitalWrite(shutdownPin, HIGH);
+  }
+}
+
+void event()
+{
+  DateTime now = rtc.now();
+
+/* Actual condition
+  if ((now.hour() >= 0 && now.hour() < 7) || (now.hour() >= 20 && now.hour() < 24))
+  {
+    DispOnTime = 1000 * 10;
+    Serial.println("Took 30s");
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+*/
+
+  // checks if the current hour is between midnight and 7:00 AM, or between 10:00 PM and 11:59 PM. 
+  if (((now.hour() >= 0) && (now.hour() < 7)) || ((now.hour() >= 22) && (now.hour() < 24))) //(rem_days <=99) && (rem_days >= 10)
+  {
+  // Set the display on time to 10 seconds
+    DispOnTime = 1000 * 10;
+    Serial.println("Took 10");
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+  else
+  { 
+    // Set the display on time to 5 minutes
+    DispOnTime = 1000 * 300; 
+    Serial.println("Took 60s"); //Serial.println("Took 60s");
+    digitalWrite(LED_BUILTIN, LOW);
+  }
+
+  // January 21, 2014 at 3am you would call:
+  // DateTime event(2022, 10, 1, 0, 0, 0);
+  // DateTime event(2023, 2, 11, 16, 15, 0); // Actu 
+   DateTime event(2023, 2, 11, 15, 0, 0); // Actual event
+  // DateTime event(2023, 2, 9, 1, 15, 0); // test
+  // DateTime event(2022, 11, 7, 16, 15, 0); // Test event
+  // DateTime event(2022, 11, 16, 16, 05, 0); // change event
+  // 2022, 9, 30, 20, 15, 0
+  // calculate the remaining time
+   Serial.print("Hours = ");
+   Serial.println(now.hour());
+
+   remaining = (event.unixtime() - now.unixtime());
+   rem_days = remaining / 86400L;
+   rem_hours = (remaining % 86400L) / 3600;
+   rem_mins = (((remaining % 84600L) % 3600) / 60);
+   Serial.print("event: ");
+   if (rem_days <= 0 && rem_hours <= 0 && rem_mins <= 0)
+   {
+     Serial.println("Event ended");
+     EventState = 1;
+  }
+  else{
+    Serial.println("Event running");
+    EventState = 0;
+  }
+}
+
+// #ifdef NORMAL_SPEED // Render at rate that is GIF controlled
+void loop()
+{
+  shutdown();
+  TouchOffRoutine();
+  Serial.println(millis() - startTime);
+  // ttpShutdown();
+  Serial.println(digitalRead(ShutdownInput));
+  
+
+  // digitalWrite(15, HIGH);
+
+  //digitalWrite(shutdownPin, LOW);
+  Serial.println(ttpPin);
+  /*  tft.drawString("To Go!", 90, 180, 4);
+    Serial.print(now.year(), DEC);
+    Serial.print('/');
+    Serial.print(now.month(), DEC);
+    Serial.print('/');
+    Serial.print(now.day(), DEC);
+    Serial.print(" (");
+    Serial.print(daysOfTheWeek[now.dayOfTheWeek()]);
+    Serial.print(") ");
+    Serial.print(now.hour(), DEC);
+    Serial.print(':'); 
+    Serial.print(now.minute(), DEC);
+    Serial.print(':');
+    Serial.print(now.second(), DEC);
+    Serial.println();
+ */
+  // time1();
+  // tft.fillScreen(TFT_BLACK);
+  event();
+  // Serial.println(remaining);
+
+  DateTime now = rtc.now();
+  Serial.println(rem_days);
+  Serial.println(rem_hours);
+  Serial.println(rem_mins);
+  // int t1=now.second();
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  switch (EventState)
+  {
+  case 0:
+
+    Serial.println("State: 0");
+    //  tft.setTextColor(12461043);
+    // tft.drawString("Hours", 130, 135, 4);
+    // tft.drawString("Days", 130, 75, 4);
+    // tft.setTextColor(12461043);
+    tft.drawString("To Go!", 90, 180, 4);
+    Serial.print(now.year(), DEC);
+    Serial.print('/');
+    Serial.print(now.month(), DEC);
+    Serial.print('/');
+    Serial.print(now.day(), DEC);
+    Serial.print(" (");
+    Serial.print(daysOfTheWeek[now.dayOfTheWeek()]);
+    Serial.print(") ");
+    Serial.print(now.hour(), DEC);
+    Serial.print(':');
+    Serial.print(now.minute(), DEC);
+    Serial.print(':');
+    Serial.print(now.second(), DEC);
+    Serial.println();
+
+    if (rem_days > 99) // This event is done
+    {
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      // tft.drawString("Hours", 130, 135, 4);
+      tft.drawString("Days", 130, 75, 4);
+      tft.drawString(String(rem_days), 55, 50, 7);
+    }
+
+    if ((rem_days <=99) && (rem_days >= 10)) //if days are in between 99 and 10
+    {
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString(String(rem_days), 60, 50, 7);
+      tft.drawString("Days", 130, 75, 4);
+    }
+
+    if (rem_days <= 9)
+    {
+      if (rem_days == 1)
+      {
+        tft.drawString("Day", 130, 75, 4);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString(String(rem_days), 85, 110, 7);
+      }
+      else
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString(String(rem_days), 85, 50, 7);
+      tft.drawString("Days", 130, 75, 4);
+    }
+
+// hours
+    if (rem_hours >= 10)
+    {
+      tft.drawString("Hours", 130, 135, 4);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString(String(rem_hours), 60, 110, 7);
+    }
+
+    // if ((rem_days <=99) && (rem_days >= 10))    
+
+    if (rem_hours <= 9) {
+
+      if (rem_hours == 1) {
+        tft.drawString("Hour", 130, 135, 4);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString(String(rem_hours), 85, 110, 7);
+      }
+      else
+      tft.drawString("Hours", 130, 135, 4);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString(String(rem_hours), 85, 110, 7);
+    }
+
+    if (gif.open((uint8_t *)GIF_IMAGE1, sizeof(GIF_IMAGE1), GIFDraw))
+    {
+
+      tft.startWrite(); // The TFT chip slect is locked low
+      while (gif.playFrame(true, NULL))
+      {
+        yield();
+        // Serial.print("Player running frame:  ");
+        // Serial.println(gif.playFrame());
+      }
+      gif.close();
+      tft.endWrite(); // Release TFT chip select for other SPI devices
+      
+    }
+    break;
+
+  case 1:
+
+    while(StateChange == 0)
+    {
+      tft.fillScreen(TFT_BLACK);
+      StateChange++;
+    }
+
+    Serial.println("Event end");
+     Serial.println(rem_mins);
+    // delay(1000);
+
+    // Serial.println(String("DateTime::TIMESTAMP_TIME:\t")+now.timestamp(DateTime::TIMESTAMP_TIME));
+     Serial.println(String("DateTime::TIMESTAMP_FULL:\t")+now.timestamp(DateTime::TIMESTAMP_FULL));
+    // Serial.println(String("DateTime::TIMESTAMP_DATE:\t")+now.timestamp(DateTime::TIMESTAMP_DATE));
+    // tft.drawString("Hours", 130, 135, 4);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(String(now.timestamp(DateTime::TIMESTAMP_TIME)), 50, 80, 7);
+    tft.drawString(String(now.timestamp(DateTime::TIMESTAMP_DATE)), 60, 160, 4);
+
+    if (rem_hours >= 10)
+    {
+      tft.drawString("Hours", 130, 135, 4);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString(String(rem_hours), 60, 110, 7);
+    }
+
+    if (gif.open((uint8_t *)GIF_IMAGE1, sizeof(GIF_IMAGE1), GIFDraw))
+    {
+
+      tft.startWrite(); // The TFT chip slect is locked low
+      while (gif.playFrame(true, NULL))
+      {
+        yield();
+        // Serial.print("Player running frame:  ");
+      }
+      gif.close();
+      tft.endWrite(); // Release TFT chip select for other SPI devices
+    }
+    break;
+
+
+    break;
+  }
+}
+
+
+// 0.345W
+// manual settling time 1.4s
